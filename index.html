@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Studienverlaufsplan Bachelor Verfahrens- und Umwelttechnik</title>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<style>
+ body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#f4f5f7;color:#222}
+ header{background:#003c64;color:#fff;padding:10px 18px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+ header h1{font-size:17px;margin:0 14px 0 0}
+ select,button{padding:5px 9px;font-size:13px}
+ #gesamt,#status{font-size:12.5px;background:#ffffff22;padding:4px 10px;border-radius:4px}
+ main{display:flex;gap:14px;padding:14px;align-items:flex-start}
+ #pool{width:230px;background:#fff;border:1px solid #ccc;border-radius:6px;padding:9px;flex:0 0 auto}
+
+ #plan{flex:1;display:grid;grid-template-columns:repeat(var(--sp,2),minmax(0,1fr));gap:10px}
+
+ .spalte{background:#fff;border:1px solid #ccc;border-radius:6px;padding:8px;min-width:0}
+ .spalte h3{font-size:14px;margin:0}
+ .kopf{font-size:12px;color:#555;margin:2px 0 8px}
+ .liste{min-height:150px}
+ #poolListe{min-height:120px}
+ .gesperrt{background:#fafafa}
+ .kachel{background:#e8f0f8;border:1px solid #8fb0cc;border-left:5px solid #2b6ca3;
+         border-radius:4px;padding:5px 7px;margin-bottom:5px;font-size:12.5px;cursor:grab;
+         line-height:1.25;overflow-wrap:anywhere}
+ .kachel small{color:#555;font-size:11px}
+ .ovl{border-left-color:#e08600}
+ .flex{border-left-color:#2e7d32}
+ .locked{background:#eceff1;border-left-color:#555;cursor:not-allowed}
+ .warn{outline:2px solid #c62828}
+ .ok{color:#2e7d32}.hoch{color:#c62828;font-weight:bold}
+ #hinweise{padding:0 16px 22px;font-size:13px}
+ #hinweise p{margin:3px 0}
+ .legende{font-size:11.5px;color:#444;margin-top:10px;border-top:1px solid #ddd;padding-top:6px}
+ #drucktitel{display:none}
+
+@media print{
+  @page{ size:A4 landscape; margin:8mm; }
+  html,body{background:#fff;margin:0;padding:0;
+            -webkit-print-color-adjust:exact;print-color-adjust:exact}
+  header,#pool,button,select{display:none !important}
+  #drucktitel{display:block;font-size:11pt;font-weight:bold;margin:0 0 3mm}
+  main{display:block;padding:0;margin:0}
+  #plan{gap:2mm}
+  .spalte{padding:2mm;border:0.3mm solid #999;border-radius:1mm;
+          break-inside:avoid;page-break-inside:avoid}
+  .spalte h3{font-size:9pt}
+  .kopf{font-size:8pt;margin:0 0 1.5mm}
+  .liste{min-height:0 !important}
+  .kachel{font-size:7.5pt;line-height:1.2;padding:1mm 1.5mm;margin-bottom:1mm;
+          border-left-width:1.2mm;cursor:auto;hyphens:auto;break-inside:avoid}
+  .kachel small{font-size:6.5pt}
+  #hinweise{padding:2mm 0 0;font-size:7pt}
+}
+</style>
+</head>
+<body>
+
+<header>
+ <h1>Bachelor Verfahrens- und Umwelttechnik</h1>
+ <label>Zeitmodell
+  <select id="zeit"><option value="vz">Vollzeit</option><option value="tz">Teilzeit</option></select>
+ </label>
+ <label>Studienbeginn
+  <select id="start"><option value="W">Wintersemester</option><option value="S">Sommersemester</option></select>
+ </label>
+ <button id="muster">Musterplan einsetzen</button>
+ <button id="leer">Alles in den Pool</button>
+ <button id="print">Drucken / PDF</button>
+ <span id="gesamt"></span>
+ <span id="status"></span>
+</header>
+
+<div id="drucktitel"></div>
+
+<main>
+ <aside id="pool">
+   <h3 style="margin:0 0 6px;font-size:14px">Modulpool</h3>
+   <div class="liste" id="poolListe"></div>
+   <div class="legende">
+     <b>Legende</b><br>
+     grau = fest verankert (Studien-/Bachelorarbeit)<br>
+     orange = Voraussetzungsmodul (muss vor dem zugehörigen Zielmodul liegen)<br>
+     grün = frei verschiebbar<br><br>
+     Der Stand wird automatisch im Browser gespeichert.
+   </div>
+ </aside>
+ <section id="plan"></section>
+</main>
+
+<div id="hinweise"></div>
+
+<script>
+/* ==========================================================================
+   1. STELLSCHRAUBEN
+   ========================================================================== */
+const CP_STD   = 5;
+const CP_ZIEL  = 180;
+const TOLERANZ = 5;
+
+/* ÄNDERN: Semesterzahl, CP-Richtwert, gesperrte Semester und Spalten je Reihe.
+   gesperrt bleibt bewusst leer – Bachelorarbeit wird über "fest" + "locked"
+   verankert, das letzte Semester selbst bleibt für weitere Module offen. */
+const KONFIG = {
+  vz:{ semester:6, ziel:30, gesperrt:[], proZeile:3 },
+  tz:{ semester:9, ziel:20, gesperrt:[], proZeile:3 }
+};
+
+const SPEICHER = "svp_but_v2_";   // Version hochgezählt, da sich die Logik ändert
+
+/* ==========================================================================
+   2. MODULDATEN
+   ========================================================================== */
+const MODULE = [
+ /* ---------------- Wintersemester-exklusive Module ---------------- */
+ {id:"PCHEM", name:"Physikalische Chemie", angebot:["W"],
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+ {id:"ELEK", name:"Allgemeine Elektrotechnik", angebot:["W"],
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+ {id:"WERK", name:"Werkstofftechnik", angebot:["W"],
+  start:{vz_W:1, vz_S:2, tz_W:3, tz_S:4}},
+ {id:"STAT", name:"Statik und Festigkeitslehre", angebot:["W"],
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+ {id:"STROEM", name:"Strömungslehre", angebot:["W"], ovl:true,
+  start:{vz_W:1, vz_S:2, tz_W:3, tz_S:4}},
+ {id:"EINF", name:"Einführung in die Verfahrens- und Umwelttechnik", cp:2.5, angebot:["W"],
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+
+ {id:"THERMO", name:"Thermodynamik", angebot:["W"], ovl:true,
+  start:{vz_W:3, vz_S:4, tz_W:5, tz_S:6}},
+ {id:"MSR1", name:"Mess-, Steuerungs- und Regelungstechnik 1", angebot:["W"],
+  start:{vz_W:3, vz_S:4, tz_W:3, tz_S:4}},
+ {id:"ANLB", name:"Anlagenbau", angebot:["W"],
+  start:{vz_W:3, vz_S:4, tz_W:5, tz_S:6}},
+ {id:"CVT1", name:"Chemische Verfahrenstechnik 1", angebot:["W"], voraussetzung:"CHEM2",
+  start:{vz_W:3, vz_S:4, tz_W:5, tz_S:6}},
+ {id:"SIM2", name:"Simulation 2", cp:2.5, angebot:["W"],
+  start:{vz_W:3, vz_S:4, tz_W:5, tz_S:6}},
+
+ {id:"MVT2", name:"Mechanische Verfahrenstechnik 2", angebot:["W"],
+  start:{vz_W:5, vz_S:6, tz_W:7, tz_S:8}},
+ {id:"TVT2", name:"Thermische Verfahrenstechnik 2", angebot:["W"],
+  start:{vz_W:5, vz_S:6, tz_W:7, tz_S:8}},
+ {id:"URT1", name:"Umwelt- und Recyclingtechnik 1", angebot:["W"],
+  start:{vz_W:5, vz_S:6, tz_W:7, tz_S:8}},
+
+ /* ---------------- Sommersemester-exklusive Module ---------------- */
+ {id:"CHEM2", name:"Chemie 2", angebot:["S"], ovl:true,
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"DYN1", name:"Dynamik 1", cp:2.5, angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"SIM1", name:"Simulation 1", cp:2.5, angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"BRENN", name:"Brennstofftechnik und Grundlagen der Energieeffizienz", angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:4, tz_S:3}},
+ {id:"IWS", name:"Impuls-, Wärme- und Stoffübertragung", angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:4, tz_S:3}},
+ {id:"MSR2", name:"Mess-, Steuerungs- und Regelungstechnik 2", angebot:["S"],
+  start:{vz_W:4, vz_S:3, tz_W:4, tz_S:3}},
+ {id:"APP", name:"Elemente des Apparatebaus", angebot:["S"],
+  start:{vz_W:4, vz_S:3, tz_W:6, tz_S:5}},
+ {id:"VEST", name:"Verfahrensentwicklung und Sicherheitstechnik", angebot:["S"],
+  start:{vz_W:4, vz_S:3, tz_W:6, tz_S:5}},
+ {id:"FEM", name:"Fluidenergiemaschinen", angebot:["S"],
+  start:{vz_W:4, vz_S:3, tz_W:6, tz_S:5}},
+ {id:"MVT1", name:"Mechanische Verfahrenstechnik 1", angebot:["S"], voraussetzung:"STROEM",
+  start:{vz_W:4, vz_S:3, tz_W:8, tz_S:7}},
+ {id:"TVT1", name:"Thermische Verfahrenstechnik 1", angebot:["S"], voraussetzung:"THERMO",
+  start:{vz_W:6, vz_S:5, tz_W:8, tz_S:7}},
+ {id:"CVT2", name:"Chemische Verfahrenstechnik 2", angebot:["S"],
+  start:{vz_W:6, vz_S:5, tz_W:8, tz_S:7}},
+ {id:"UMT", name:"Umweltmesstechnik (Analytik, Partikelmesstechnik)", angebot:["S"],
+  start:{vz_W:6, vz_S:5, tz_W:8, tz_S:7}},
+
+ /* ---------------- Ganzjährig angebotene Module ---------------- */
+ {id:"WP1", name:"Wahlpflichtmodul 1", angebot:["S","W"],
+  start:{vz_W:5, vz_S:5, tz_W:6, tz_S:5}},
+ {id:"WP2", name:"Wahlpflichtmodul 2", angebot:["S","W"],
+  start:{vz_W:5, vz_S:5, tz_W:7, tz_S:8}},
+ {id:"HM1", name:"Höhere Mathematik 1", angebot:["S","W"],
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"HM2", name:"Höhere Mathematik 2", angebot:["S","W"],
+  start:{vz_W:3, vz_S:4, tz_W:3, tz_S:4}},
+ {id:"PSW", name:"Physik der Schwingungen und Wellen", cp:2.5, angebot:["S","W"],
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"CHEM1", name:"Chemie 1", cp:2.5, angebot:["S","W"],
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+ {id:"KI", name:"Einführung in die Künstliche Intelligenz", cp:2.5, angebot:["S","W"],
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"BLUE", name:"Blue Engineering – Nachhaltigkeit im Ingenieurwesen", cp:2.5, angebot:["S","W"],
+  start:{vz_W:3, vz_S:4, tz_W:4, tz_S:3}},
+ {id:"RECHT", name:"Grundlagen des Rechts", cp:2.5, angebot:["S","W"],
+  start:{vz_W:4, vz_S:3, tz_W:4, tz_S:3}},
+ {id:"ENGL", name:"Technisches Englisch", cp:2.5, angebot:["S","W"],
+  start:{vz_W:4, vz_S:3, tz_W:5, tz_S:6}},
+
+ /* ---------------- Abschlussarbeiten (feste Position, aber Semester bleibt offen) ---------------- */
+ {id:"SA", name:"Studienarbeit", cp:5, angebot:["S","W"],
+  fest:{vz_W:5, vz_S:5, tz_W:8, tz_S:8}},
+ {id:"BA", name:"Bachelorarbeit", cp:15, angebot:["S","W"],
+  fest:{vz_W:6, vz_S:6, tz_W:9, tz_S:9}}
+];
+
+/* ==========================================================================
+   3. LOGIK
+   ========================================================================== */
+const NAME = {S:"Sommersemester", W:"Wintersemester"};
+const zeit        = () => document.getElementById("zeit").value;
+const saisonStart = () => document.getElementById("start").value;
+const variante    = () => zeit()+"_"+saisonStart();
+const modul = id => MODULE.find(m=>m.id===id);
+const cpVon = m => m.cp ?? CP_STD;
+const aktiv = m => !m.nurIn || m.nurIn.includes(zeit());
+
+function schluessel(){ return SPEICHER + variante(); }
+
+function standSpeichern(){
+  const daten={ts:Date.now(), stand:[]};
+  document.querySelectorAll("#plan .liste").forEach(l=>{
+    l.querySelectorAll(".kachel").forEach(el=>daten.stand.push({id:el.dataset.id, sem:+l.dataset.sem}));
+  });
+  document.querySelectorAll("#poolListe .kachel")
+    .forEach(el=>daten.stand.push({id:el.dataset.id, sem:0}));
+  try{
+    localStorage.setItem(schluessel(), JSON.stringify(daten));
+    melden("Stand gespeichert "+new Date(daten.ts).toLocaleTimeString("de-DE"));
+  }catch(e){ melden("Speichern im Browser nicht möglich"); }
+}
+function standLaden(){
+  try{ return JSON.parse(localStorage.getItem(schluessel())||"null"); }catch(e){ return null; }
+}
+function melden(t){ document.getElementById("status").textContent=t; }
+
+function semesterfolge(){
+  const n=KONFIG[zeit()].semester, s0=saisonStart();
+  return Array.from({length:n},(_,i)=>({nr:i+1, saison:(i%2===0)?s0:(s0==="W"?"S":"W")}));
+}
+
+function aufbauen(modus="auto"){
+  const plan=document.getElementById("plan"), pool=document.getElementById("poolListe");
+  plan.innerHTML=""; pool.innerHTML="";
+  const v=variante(), k=KONFIG[zeit()], folge=semesterfolge();
+
+  plan.style.setProperty("--sp", k.proZeile);
+
+  folge.forEach(s=>{
+    const gesperrt=k.gesperrt.includes(s.nr);
+    const sp=document.createElement("div");
+    sp.className="spalte";
+    sp.innerHTML=`<h3>${s.nr}. Semester</h3>
+      <div class="kopf">${NAME[s.saison]} · <span class="cp">0</span> / ${k.ziel} CP</div>
+      <div class="liste ${gesperrt?"gesperrt":""}" data-sem="${s.nr}"
+           data-saison="${s.saison}" data-gesperrt="${gesperrt}"></div>`;
+    plan.appendChild(sp);
+  });
+
+  const gespeichert = (modus==="auto") ? standLaden() : null;
+  const pos={}; if(gespeichert) gespeichert.stand.forEach(e=>pos[e.id]=e.sem);
+
+  MODULE.filter(aktiv).forEach(m=>{
+    const fest=m.fest?.[v];
+    let ziel=null;
+    if(fest) ziel=fest;
+    else if(gespeichert && pos[m.id]!==undefined) ziel=pos[m.id]||null;
+    else if(modus==="muster") ziel=m.start?.[v] ?? null;
+
+    if(ziel && !fest){
+      const s=folge[ziel-1];
+      if(!s || !m.angebot.includes(s.saison) || k.gesperrt.includes(ziel)) ziel=null;
+    }
+
+    const kach=document.createElement("div");
+    kach.className="kachel"+(fest?" locked":"")+(m.ovl?" ovl":(!fest?" flex":""));
+    kach.dataset.id=m.id;
+    const saisonText = m.angebot.length===2 ? "ganzjährig" : "nur "+NAME[m.angebot[0]];
+    const vorText = m.voraussetzung ? " · setzt \""+modul(m.voraussetzung).name+"\" voraus" : "";
+    kach.innerHTML=`${m.name}<br><small>${cpVon(m)} CP · ${saisonText}${m.ovl?" · Voraussetzungsmodul":""}${vorText}</small>`;
+    (ziel ? plan.querySelector(`.liste[data-sem="${ziel}"]`) : pool).appendChild(kach);
+  });
+
+  document.querySelectorAll(".liste").forEach(l=>{
+    Sortable.create(l,{
+      group:"module", animation:120, filter:".locked",
+      onMove:evt=>{
+        const ziel=evt.to;
+        if(ziel.dataset.gesperrt==="true") return false;
+        const saison=ziel.dataset.saison;
+        if(!saison) return true;
+        return modul(evt.dragged.dataset.id).angebot.includes(saison);
+      },
+      onSort:()=>{ pruefen(); standSpeichern(); }
+    });
+  });
+
+  document.getElementById("drucktitel").textContent =
+    "Studienverlaufsplan Bachelor Verfahrens- und Umwelttechnik – "
+    + (zeit()==="vz" ? "Vollzeit, 6 Semester" : "Teilzeit, 9 Semester")
+    + ", Beginn im " + NAME[saisonStart()];
+
+  pruefen();
+  if(modus!=="auto") standSpeichern();
+  else if(gespeichert) melden("Gespeicherter Stand geladen");
+  else melden("Neuer Plan");
+}
+
+function pruefen(){
+  const k=KONFIG[zeit()], lage={}, meldungen=[]; let gesamt=0;
+  document.querySelectorAll(".kachel").forEach(el=>el.classList.remove("warn"));
+
+  document.querySelectorAll("#plan .liste").forEach(l=>{
+    const nr=+l.dataset.sem; let summe=0;
+    l.querySelectorAll(".kachel").forEach(el=>{
+      lage[el.dataset.id]=nr; summe+=cpVon(modul(el.dataset.id));
+    });
+    gesamt+=summe;
+    const feld=l.parentElement.querySelector(".cp");
+    feld.textContent=summe;
+    feld.parentElement.className="kopf "+(summe>k.ziel+TOLERANZ?"hoch":"ok");
+    if(summe>k.ziel+TOLERANZ)
+      meldungen.push([`${nr}. Semester: ${summe} CP überschreiten den Richtwert von ${k.ziel} CP deutlich.`,"warn"]);
+  });
+
+  MODULE.filter(m=>m.voraussetzung && aktiv(m)).forEach(m=>{
+    const req=modul(m.voraussetzung);
+    if(!req) return;
+    const posM=lage[m.id], posR=lage[req.id];
+    if(posM && (!posR || posR>=posM)){
+      meldungen.push([`"${req.name}" muss vor "${m.name}" (Semester ${posM}) liegen.`,"warn"]);
+      const elM=document.querySelector(`.kachel[data-id="${m.id}"]`); if(elM) elM.classList.add("warn");
+      const elR=document.querySelector(`.kachel[data-id="${req.id}"]`); if(elR) elR.classList.add("warn");
+    }
+  });
+
+  const offen=document.querySelectorAll("#poolListe .kachel").length;
+  if(offen) meldungen.push([`${offen} Modul(e) liegen noch im Pool und sind nicht eingeplant.`,"info"]);
+
+  const diff=CP_ZIEL-gesamt;
+  document.getElementById("gesamt").textContent =
+    `Summe: ${gesamt} / ${CP_ZIEL} CP` + (diff!==0 ? `  (Differenz ${diff>0?"−":"+"}${Math.abs(diff)})` : "");
+
+  document.getElementById("hinweise").innerHTML =
+    meldungen.length
+      ? meldungen.map(([t,typ])=>`<p style="color:${typ==="warn"?"#b00":"#555"}">${typ==="warn"?"⚠":"ℹ"} ${t}</p>`).join("")
+      : `<p style="color:#2e7d32">✓ Der Plan erfüllt alle hinterlegten Bedingungen.</p>`;
+}
+
+document.getElementById("zeit").onchange  = ()=>aufbauen("auto");
+document.getElementById("start").onchange = ()=>aufbauen("auto");
+document.getElementById("muster").onclick = ()=>aufbauen("muster");
+document.getElementById("leer").onclick   = ()=>aufbauen("leer");
+document.getElementById("print").onclick  = ()=>window.print();
+aufbauen("auto");
+</script>
+</body>
+</html>
